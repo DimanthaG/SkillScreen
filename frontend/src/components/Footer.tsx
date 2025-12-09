@@ -3,12 +3,17 @@
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Github, Twitter, Linkedin, Mail } from 'lucide-react';
+import { FRONTEND_URL } from '@/lib/config';
 
-export default function Footer({ isPortfolio = false }: { isPortfolio?: boolean }) {
+interface FooterProps {
+  readonly isPortfolio?: boolean;
+}
+
+export default function Footer({ isPortfolio = false }: FooterProps) {
   const router = useRouter();
   const currentYear = new Date().getFullYear();
 
-  const MAIN_URL = process.env.NODE_ENV === 'development' ? 'http://localhost:3000' : 'https://skillscreen.dev';
+  const MAIN_URL = FRONTEND_URL;
 
   const getLinkUrl = (path: string) => {
     if (isPortfolio) {

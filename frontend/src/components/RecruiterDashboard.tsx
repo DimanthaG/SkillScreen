@@ -4,7 +4,9 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { FileUploadDemo } from '@/components/ui/file-upload-demo';
 import { apiClient } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
 import { FileText, User } from 'lucide-react';
+
 
 interface Candidate {
   id: string;
@@ -91,7 +93,6 @@ export default function RecruiterDashboard() {
 
   // Job Description Management state
   const [jobTemplates, setJobTemplates] = useState<JobTemplate[]>([]);
-  const [loadingJobTemplates, setLoadingJobTemplates] = useState(false);
   const [templateTitle, setTemplateTitle] = useState('');
   const [templateDepartment, setTemplateDepartment] = useState('');
   const [templateContent, setTemplateContent] = useState('');
@@ -99,56 +100,61 @@ export default function RecruiterDashboard() {
   const [skillInput, setSkillInput] = useState('');
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
 
-  // Hardcoded org for now – TODO: load from authenticated recruiter/org context
-  const DEFAULT_ORGANIZATION_ID = "ecf369b2-caae-4962-85a8-404db7ab0d7e";
+  const { user } = useAuth();
+  // Use authenticated user's organization ID, fallback to default only if needed
+  const organizationId = user?.organizationId;
 
   // Fetch all interviews, candidates, and job templates
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoadingInterviews(true);
-        setLoadingCandidates(true);
-        setLoadingJobTemplates(true);
+  const refreshData = async () => {
+    try {
+      setLoadingInterviews(true);
+      setLoadingCandidates(true);
 
-        // Fetch all interviews
-        const interviewsResponse = await apiClient.getAllInterviews();
-        if (interviewsResponse.success) {
-          setInterviews(interviewsResponse.data.interviews || []);
-        }
-
-        // Fetch all candidates
-        const candidatesResponse = await apiClient.getAllCandidates();
-        if (candidatesResponse.success) {
-          setCandidates(candidatesResponse.data.candidates || []);
-        }
-
-        // Fetch job templates (job positions) from interview-service
-        try {
-          const jobPositionsRes = await apiClient.getJobPositions(DEFAULT_ORGANIZATION_ID);
-          if (jobPositionsRes.success && jobPositionsRes.data?.job_positions) {
-            const templates: JobTemplate[] = jobPositionsRes.data.job_positions.map((jp: any) => ({
-              id: jp.id,
-              title: jp.title,
-              department: jp.department || 'General',
-              content: jp.description || '',
-              required_skills: Array.isArray(jp.required_skills) ? jp.required_skills : undefined,
-            }));
-            setJobTemplates(templates);
-          }
-        } catch (jobErr) {
-          console.error('Failed to fetch job templates:', jobErr);
-        }
-      } catch (error) {
-        console.error('Failed to fetch data:', error);
-      } finally {
+      if (!organizationId) {
         setLoadingInterviews(false);
         setLoadingCandidates(false);
-        setLoadingJobTemplates(false);
+        return;
       }
-    };
 
-    fetchData();
-  }, []);
+      // Fetch all interviews
+      const interviewsResponse = await apiClient.getAllInterviews(organizationId);
+      if (interviewsResponse.success) {
+        setInterviews(interviewsResponse.data.interviews || []);
+      }
+
+      // Fetch all candidates
+      const candidatesResponse = await apiClient.getAllCandidates();
+      if (candidatesResponse.success) {
+        setCandidates(candidatesResponse.data.candidates || []);
+      }
+
+      // Fetch job templates (job positions) from interview-service
+      try {
+        const jobPositionsRes = await apiClient.getJobPositions(organizationId);
+        if (jobPositionsRes.success && jobPositionsRes.data?.job_positions) {
+          const templates: JobTemplate[] = jobPositionsRes.data.job_positions.map((jp: any) => ({
+            id: jp.id,
+            title: jp.title,
+            department: jp.department || 'General',
+            content: jp.description || '',
+            required_skills: Array.isArray(jp.required_skills) ? jp.required_skills : undefined,
+          }));
+          setJobTemplates(templates);
+        }
+      } catch (error_) {
+        console.error('Error loading job templates:', error_);
+      }
+    } catch (error) {
+      console.error('Failed to fetch data:', error);
+    } finally {
+      setLoadingInterviews(false);
+      setLoadingCandidates(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshData();
+  }, [organizationId]); // Add organizationId dependency
 
   const formatDate = (dateString: string) => {
     if (!dateString) return 'Unknown';
@@ -189,31 +195,56 @@ export default function RecruiterDashboard() {
     setEditingTemplateId(null);
   };
 
-  const saveTemplate = () => {
+  const saveTemplate = async () => {
     const trimmedTitle = templateTitle.trim();
     const trimmedDept = templateDepartment.trim();
     const trimmedContent = templateContent.trim();
-    if (!trimmedTitle || !trimmedDept || !trimmedContent) return;
+    if (!trimmedTitle || !trimmedDept || !trimmedContent || !organizationId) return;
 
-    if (editingTemplateId) {
-      setJobTemplates(prev => prev.map(t => t.id === editingTemplateId ? {
-        ...t,
-        title: trimmedTitle,
-        department: trimmedDept,
-        content: trimmedContent,
-        required_skills: templateSkills.length > 0 ? templateSkills : undefined,
-      } : t));
-    } else {
-      const newTemplate: JobTemplate = {
-        id: `tmpl-${Date.now()}`,
-        title: trimmedTitle,
-        department: trimmedDept,
-        content: trimmedContent,
-        required_skills: templateSkills.length > 0 ? templateSkills : undefined,
-      };
-      setJobTemplates(prev => [newTemplate, ...prev]);
+    try {
+      if (editingTemplateId) {
+        const response = await apiClient.updateJobPosition(editingTemplateId, {
+          title: trimmedTitle,
+          department: trimmedDept,
+          description: trimmedContent,
+          required_skills: templateSkills.length > 0 ? templateSkills : undefined,
+        });
+
+        if (response.success) {
+          setJobTemplates(prev => prev.map(t => t.id === editingTemplateId ? {
+            ...t,
+            title: trimmedTitle,
+            department: trimmedDept,
+            content: trimmedContent,
+            required_skills: templateSkills.length > 0 ? templateSkills : undefined,
+          } : t));
+        }
+      } else {
+        const response = await apiClient.createJobPosition({
+          organization_id: organizationId,
+          title: trimmedTitle,
+          department: trimmedDept,
+          description: trimmedContent,
+          required_skills: templateSkills.length > 0 ? templateSkills : undefined,
+          is_active: true
+        });
+
+        if (response.success && response.data) {
+          const newTemplate: JobTemplate = {
+            id: response.data.id,
+            title: response.data.title,
+            department: response.data.department || 'General',
+            content: response.data.description || '',
+            required_skills: response.data.required_skills,
+          };
+          setJobTemplates(prev => [newTemplate, ...prev]);
+        }
+      }
+      resetTemplateForm();
+    } catch (error) {
+      console.error('Failed to save template:', error);
+      alert('Failed to save template. Please try again.');
     }
-    resetTemplateForm();
   };
 
   const editTemplate = (template: JobTemplate) => {
@@ -243,18 +274,25 @@ export default function RecruiterDashboard() {
     }
   };
 
-  const deleteTemplate = (id: string) => {
-    setJobTemplates(prev => prev.filter(t => t.id !== id));
-    if (editingTemplateId === id) resetTemplateForm();
+  const deleteTemplate = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this template?')) return;
+
+    try {
+      const response = await apiClient.deleteJobPosition(id);
+      if (response.success) {
+        setJobTemplates(prev => prev.filter(t => t.id !== id));
+        if (editingTemplateId === id) resetTemplateForm();
+      }
+    } catch (error) {
+      console.error('Failed to delete template:', error);
+      alert('Failed to delete template. Please try again.');
+    }
   };
 
   return (
-    <div className="min-h-screen p-6">
-      {/* Breathing circle background */}
-      <div className="breathing-circle"></div>
-      
-      <div className="relative z-10 max-w-7xl mx-auto">
-        
+    <div className="relative">
+      <div className="relative z-10">
+
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-white mb-2">Recruiter Dashboard</h1>
@@ -262,21 +300,23 @@ export default function RecruiterDashboard() {
         </div>
         {/* Stats Overview */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <div className="bg-primary-200/20 backdrop-blur-sm rounded-xl p-6 border border-primary-200/30">
-            <div className="text-3xl font-bold text-white mb-2">24</div>
+          <div className="bg-white/5 backdrop-blur-md rounded-xl p-6 border border-white/10 hover:bg-white/10 transition-colors">
+            <div className="text-3xl font-bold text-white mb-2">{interviews.length}</div>
+            <div className="text-primary-100">Total Interviews</div>
+          </div>
+          <div className="bg-white/5 backdrop-blur-md rounded-xl p-6 border border-white/10 hover:bg-white/10 transition-colors">
+            <div className="text-3xl font-bold text-white mb-2">{jobTemplates.length}</div>
+            <div className="text-primary-100">Active Jobs</div>
+          </div>
+          <div className="bg-white/5 backdrop-blur-md rounded-xl p-6 border border-white/10 hover:bg-white/10 transition-colors">
+            <div className="text-3xl font-bold text-white mb-2">{candidates.length}</div>
             <div className="text-primary-100">Total Candidates</div>
           </div>
-          <div className="bg-primary-200/20 backdrop-blur-sm rounded-xl p-6 border border-primary-200/30">
-            <div className="text-3xl font-bold text-white mb-2">8</div>
-            <div className="text-primary-100">Interviews Today</div>
-          </div>
-          <div className="bg-primary-200/20 backdrop-blur-sm rounded-xl p-6 border border-primary-200/30">
-            <div className="text-3xl font-bold text-white mb-2">12</div>
-            <div className="text-primary-100">Pending Reviews</div>
-          </div>
-          <div className="bg-primary-200/20 backdrop-blur-sm rounded-xl p-6 border border-primary-200/30">
-            <div className="text-3xl font-bold text-white mb-2">85%</div>
-            <div className="text-primary-100">Avg. Score</div>
+          <div className="bg-white/5 backdrop-blur-md rounded-xl p-6 border border-white/10 hover:bg-white/10 transition-colors">
+            <div className="text-3xl font-bold text-white mb-2">
+              {interviews.filter(i => i.status === 'completed').length}
+            </div>
+            <div className="text-primary-100">Completed Interviews</div>
           </div>
         </div>
 
@@ -284,22 +324,20 @@ export default function RecruiterDashboard() {
         <div className="flex space-x-1 mb-8 bg-primary-200/10 rounded-lg p-1">
           <button
             onClick={() => setActiveTab('interviews')}
-            className={`px-6 py-3 rounded-md font-semibold transition-colors ${
-              activeTab === 'interviews'
-                ? 'bg-white text-primary-300'
-                : 'text-white hover:bg-primary-200/20'
-            }`}
+            className={`px-6 py-3 rounded-md font-semibold transition-colors ${activeTab === 'interviews'
+              ? 'bg-white text-primary-300'
+              : 'text-white hover:bg-primary-200/20'
+              }`}
           >
             Interviews
           </button>
-         
+
           <button
             onClick={() => setActiveTab('jobs')}
-            className={`px-6 py-3 rounded-md font-semibold transition-colors ${
-              activeTab === 'jobs'
-                ? 'bg-white text-primary-300'
-                : 'text-white hover:bg-primary-200/20'
-            }`}
+            className={`px-6 py-3 rounded-md font-semibold transition-colors ${activeTab === 'jobs'
+              ? 'bg-white text-primary-300'
+              : 'text-white hover:bg-primary-200/20'
+              }`}
           >
             Active Job Listings
           </button>
@@ -308,13 +346,13 @@ export default function RecruiterDashboard() {
         {/* Tab Content */}
         {/* Interviews Tab */}
         {activeTab === 'interviews' && (
-          <div className="bg-primary-200/20 backdrop-blur-sm rounded-xl p-6 border border-primary-200/30">
+          <div className="bg-white/5 backdrop-blur-md rounded-xl p-6 border border-white/10">
             {/* Document Upload */}
             <div className="mb-8">
-              <FileUploadDemo />
+              <FileUploadDemo onUploadSuccess={refreshData} />
             </div>
             <div className="flex justify-between items-center mb-6">
-              
+
               <h2 className="text-2xl font-semibold text-white flex items-center gap-2">
                 <FileText className="w-6 h-6" />
                 All Interviews
@@ -340,10 +378,10 @@ export default function RecruiterDashboard() {
                   <thead>
                     <tr className="border-b border-white/10">
                       <th className="text-left py-3 px-4 text-white/80 font-medium">Candidate</th>
-                      <th className="text-left py-3 px-4 text-white/80 font-medium">User</th>
+                      <th className="text-left py-3 px-4 text-white/80 font-medium">Email</th>
+                      <th className="text-left py-3 px-4 text-white/80 font-medium">Job Position</th>
+                      <th className="text-left py-3 px-4 text-white/80 font-medium">Mode</th>
                       <th className="text-left py-3 px-4 text-white/80 font-medium">Date</th>
-                      <th className="text-left py-3 px-4 text-white/80 font-medium">Duration</th>
-                      <th className="text-left py-3 px-4 text-white/80 font-medium">Words</th>
                       <th className="text-left py-3 px-4 text-white/80 font-medium">Status</th>
                       <th className="text-left py-3 px-4 text-white/80 font-medium">Actions</th>
                     </tr>
@@ -359,16 +397,10 @@ export default function RecruiterDashboard() {
                             <span className="text-white font-medium">{interview.candidate_name || interview.candidate_id}</span>
                           </div>
                         </td>
-                        <td className="py-4 px-4 text-white/80">{interview.assigned_user || interview.user_id || '-'}</td>
+                        <td className="py-4 px-4 text-white/80">{interview.candidate_email || '-'}</td>
+                        <td className="py-4 px-4 text-white/80">{interview.job_position_title || interview.job_position || '-'}</td>
+                        <td className="py-4 px-4 text-white/80 capitalize">{interview.mode || 'Chat'}</td>
                         <td className="py-4 px-4 text-white/80">{formatDate(interview.created_at || interview.scheduled_at)}</td>
-                        <td className="py-4 px-4 text-white/80">
-                          {interview.transcript?.duration_seconds 
-                            ? `${Math.floor(interview.transcript.duration_seconds / 60)}m`
-                            : '-'}
-                        </td>
-                        <td className="py-4 px-4 text-white/80">
-                          {interview.transcript?.word_count || '-'}
-                        </td>
                         <td className="py-4 px-4">
                           <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(interview.status)}`}>
                             {interview.status}
@@ -393,11 +425,11 @@ export default function RecruiterDashboard() {
 
         {/* Candidates Tab */}
         {activeTab === 'candidates' && (
-          <div className="bg-primary-200/20 backdrop-blur-sm rounded-xl p-6 border border-primary-200/30">
+          <div className="bg-white/5 backdrop-blur-md rounded-xl p-6 border border-white/10">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-semibold text-white">Candidate Pipeline</h2>
             </div>
-            
+
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
@@ -448,7 +480,7 @@ export default function RecruiterDashboard() {
         )}
 
         {activeTab === 'jobs' && (
-          <div className="bg-primary-200/20 backdrop-blur-sm rounded-xl p-6 border border-primary-200/30">
+          <div className="bg-white/5 backdrop-blur-md rounded-xl p-6 border border-white/10">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-semibold text-white">Job Description Management</h2>
             </div>
@@ -604,7 +636,7 @@ export default function RecruiterDashboard() {
 
         {activeTab === 'analytics' && (
           <div className="grid grid-cols-1 lg:grid-cols-1 gap-8">
-            <div className="bg-primary-200/20 backdrop-blur-sm rounded-xl p-6 border border-primary-200/30">
+            <div className="bg-white/5 backdrop-blur-md rounded-xl p-6 border border-white/10">
               <h3 className="text-xl font-semibold text-white mb-6">Interview Performance</h3>
               <div className="space-y-4">
                 <div>
